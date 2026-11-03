@@ -34,7 +34,9 @@ def setup_seed(seed):
 def test(args, model,test_loader,model_path):
 
     checkpoint = torch.load(model_path, map_location='cuda:{}'.format(torch.cuda.current_device()))
-    model.load_state_dict(checkpoint['model_state_dict'])
+    # accept both the per-epoch .tar (dict with 'model_state_dict') and the best-model .pkl (raw state dict)
+    state_dict = checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint
+    model.load_state_dict(state_dict)
 
     print('start test mode...')
     model.eval()
@@ -67,6 +69,17 @@ def test(args, model,test_loader,model_path):
     print('Test result: V_Acc: {:.2%}, V_Auc: {:.4} V_EER:{:.2%} F_Acc: {:.2%}, F_Auc: {:.4} F_EER:{:.2%}'
              .format(video_results.ACC, video_results.AUC, video_results.EER,frame_results.ACC, frame_results.AUC, frame_results.EER))
 
+    # added: machine-readable result so numbers in the report can be traced to a file
+    if args.out_json:
+        import json
+        res = {'model_path': model_path, 'dataset': args.dataset, 'test_root': args.test_root,
+               'frames_per_video': args.frames, 'n_videos': len(video_labels),
+               'video': {'AUC': float(video_results.AUC), 'EER': float(video_results.EER), 'ACC': float(video_results.ACC)},
+               'frame': {'AUC': float(frame_results.AUC), 'EER': float(frame_results.EER), 'ACC': float(frame_results.ACC)}}
+        os.makedirs(os.path.dirname(os.path.abspath(args.out_json)), exist_ok=True)
+        with open(args.out_json, 'w') as f:
+            json.dump(res, f, indent=2)
+
 
 if __name__ == '__main__':
     import argparse
@@ -82,6 +95,12 @@ if __name__ == '__main__':
     parser.add_argument('--num_classes', type=int, default=2)
     parser.add_argument('--num_frames', type=int, default=1)
     parser.add_argument('--num_workers', type=int, default=4)
+    # --- added for Kaggle / reproducibility (original hardcoded: Celeb_DF test path, dataset='CDF', frame=100) ---
+    parser.add_argument('--test_root', type=str, required=True,
+                        help="folder of the test set (FF++: method/video/frames; CDF/DFDC_P: real*/fake* folders of video/frames)")
+    parser.add_argument('--dataset', type=str, default='CDF', choices=['FFPP', 'CDF', 'DFDC_P'])
+    parser.add_argument('--frames', type=int, default=100, help="frames sampled per video (original CDF setting: 100)")
+    parser.add_argument('--out_json', type=str, default='', help="optional path to write the metrics as JSON")
     args = parser.parse_args()
 
 
@@ -90,8 +109,7 @@ if __name__ == '__main__':
     os.environ['CUDA_VISIBLE_DEVICES'] = '{}'.format(args.device)
     device = torch.device("cuda:{}".format(args.device) if torch.cuda.is_available() else "cpu")
 
-    test_path = '/data3/law/data/Celeb_DF/test'
-    test_dataset =TestDataset(test_path,dataset='CDF',frame=100)
+    test_dataset = TestDataset(args.test_root, dataset=args.dataset, frame=args.frames)
 
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers)
 
@@ -104,5 +122,4 @@ if __name__ == '__main__':
     print('Start eval process...')
     test(args, model,test_loader,args.model_path)
     duration = time.time()-start_time
-    print('The best AUC is {:.2%}'.format(auc))
     print('The run time is {}h {}m'.format(int(duration//3600),int(duration%3600//60)))
