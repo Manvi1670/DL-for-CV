@@ -146,6 +146,11 @@ if __name__ == '__main__':
     parser.add_argument('--num_classes', type=int, default=2)
     parser.add_argument('--num_frames', type=int, default=1)
     parser.add_argument('--num_workers', type=int, default=4)
+    # --- added for Kaggle / reproducibility (defaults keep the original behaviour) ---
+    parser.add_argument('--data_root', type=str, required=True,
+                        help="folder that contains train/ and valid/ (FF++ c23 face crops)")
+    parser.add_argument('--train_frames', type=int, default=20,
+                        help="frames sampled per video for training (dataset.py samples evenly; original value 20)")
     args = parser.parse_args()
 
 
@@ -174,11 +179,11 @@ if __name__ == '__main__':
     logging.info(args.model_dir)
     log.info('model dir:' + args.model_dir)
 
-    train_path = '/data3/law/data/FF++/c23/train'
-    valid_path = '/data3/law/data/FF++/c23/valid'
+    train_path = os.path.join(args.data_root, 'train')
+    valid_path = os.path.join(args.data_root, 'valid')
 
 
-    train_dataset = FFPP_Dataset(train_path,frame=20,phase='train')
+    train_dataset = FFPP_Dataset(train_path,frame=args.train_frames,phase='train')
     valid_dataset =TestDataset(valid_path,dataset='FFPP',frame=20)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     valid_loader = DataLoader(valid_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers)
@@ -208,6 +213,5 @@ if __name__ == '__main__':
     print('Start train process...')
     train(args, model,optimizer,train_loader,valid_loader,scheduler,save_dir)
     duration = time.time()-start_time
-    print('The task of {} is completed'.format(args.description))
-    print('The best AUC is {:.2%}'.format(auc))
+    print('The task of {} is completed'.format(args.model_dir))
     print('The run time is {}h {}m'.format(int(duration//3600),int(duration%3600//60)))
