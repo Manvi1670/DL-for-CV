@@ -37,9 +37,10 @@ from timm.models.helpers import build_model_with_cfg, named_apply, adapt_input_c
 from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_normal_
 from timm.models.registry import register_model
 from torch.distributions.normal import Normal
-
-# --- our novelty switch (task-gradient routing). ST_GATE=0 (default) = original MoE-FFD, unchanged. ---
 import os
+
+# Task-gradient routing (straight-through gate scaling). Default OFF = original MoE-FFD behaviour.
+# Enable with the environment variable ST_GATE=1
 ST_GATE = os.environ.get("ST_GATE", "0") == "1"
 
 
@@ -431,9 +432,8 @@ class Adapter_MoElayer(nn.Module):
         top_k_indices = top_indices[:, :self.k]
         top_k_gates = self.softmax(top_k_logits)
         if ST_GATE and self.k == 1:
-            # straight-through gate: forward value is exactly 1, backward carries the task gradient to w_gate / w_noise
             p_sel = self.softmax(logits).gather(1, top_k_indices)
-            top_k_gates = p_sel / p_sel.detach()
+            top_k_gates = p_sel / p_sel.detach()   # value == 1, gradient = d log p[i*]
 
         zeros = torch.zeros_like(logits, requires_grad=True)
         gates = zeros.scatter(1, top_k_indices, top_k_gates)
@@ -462,6 +462,8 @@ class Adapter_MoElayer(nn.Module):
 
         # calculate importance loss
         importance = gates.sum(0)
+        if ST_GATE:
+            importance = importance.detach()
         #
         loss = self.cv_squared(importance) + self.cv_squared(load)
         loss *= loss_coef
@@ -475,7 +477,8 @@ class Adapter_MoElayer(nn.Module):
             if len(expert_inputs[i]) == 0: continue
             expert_output =  self.adapter_experts[i](expert_inputs[i])
             expert_output = expert_output.reshape(expert_output.size(0), 197*self.dim)
-            if ST_GATE: expert_output = expert_output * gates[i]   # gates[i]: [n_i, 1], value exactly 1
+            if ST_GATE:
+                expert_output = expert_output * gates[i]
             expert_outputs.append(expert_output)
 
         y = dispatcher.combine(expert_outputs)
@@ -614,9 +617,8 @@ class LoRA_MoElayer(nn.Module):
         top_k_indices = top_indices[:, :self.k]
         top_k_gates = self.softmax(top_k_logits)
         if ST_GATE and self.k == 1:
-            # straight-through gate: forward value is exactly 1, backward carries the task gradient to w_gate / w_noise
             p_sel = self.softmax(logits).gather(1, top_k_indices)
-            top_k_gates = p_sel / p_sel.detach()
+            top_k_gates = p_sel / p_sel.detach()   # value == 1, gradient = d log p[i*]
 
         zeros = torch.zeros_like(logits, requires_grad=True)
         gates = zeros.scatter(1, top_k_indices, top_k_gates)
@@ -644,6 +646,8 @@ class LoRA_MoElayer(nn.Module):
         gates, load = self.noisy_top_k_gating(x, self.training)
         # calculate importance loss
         importance = gates.sum(0)
+        if ST_GATE:
+            importance = importance.detach()
         #
         loss = self.cv_squared(importance) + self.cv_squared(load)
         loss *= loss_coef
@@ -657,7 +661,8 @@ class LoRA_MoElayer(nn.Module):
             if len(expert_inputs[i]) == 0: continue
             qkv_delta = F.linear(expert_inputs[i], self.Lora_a_experts[i].weight)
             qkv_delta = F.linear(qkv_delta, self.Lora_b_experts[i].weight)
-            if ST_GATE: qkv_delta = qkv_delta * gates[i]           # gates[i]: [n_i, 1], value exactly 1
+            if ST_GATE:
+                qkv_delta = qkv_delta * gates[i]
             expert_outputs.append(qkv_delta)
         y = dispatcher.combine(expert_outputs)
         y = y.reshape(B,N,C*3)
