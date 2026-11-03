@@ -83,6 +83,8 @@ def process_video(vpath, outdir, n_keep, mtcnn, a):
         sel = np.unique(np.linspace(0, len(crops) - 1, n_keep).round().astype(int))
         crops = [crops[i] for i in sel]
 
+    if not crops:                                # no face found: create NO folder (an empty folder crashes dataset.py)
+        return total, 0
     os.makedirs(outdir, exist_ok=True)
     for j, c in enumerate(crops):
         p = os.path.join(outdir, f'{j}.{a.fmt}')
