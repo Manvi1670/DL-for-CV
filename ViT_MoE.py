@@ -38,6 +38,10 @@ from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_n
 from timm.models.registry import register_model
 from torch.distributions.normal import Normal
 
+# --- our novelty switch (task-gradient routing). ST_GATE=0 (default) = original MoE-FFD, unchanged. ---
+import os
+ST_GATE = os.environ.get("ST_GATE", "0") == "1"
+
 
 _logger = logging.getLogger(__name__)
 
@@ -426,6 +430,10 @@ class Adapter_MoElayer(nn.Module):
         top_k_logits = top_logits[:, :self.k]
         top_k_indices = top_indices[:, :self.k]
         top_k_gates = self.softmax(top_k_logits)
+        if ST_GATE and self.k == 1:
+            # straight-through gate: forward value is exactly 1, backward carries the task gradient to w_gate / w_noise
+            p_sel = self.softmax(logits).gather(1, top_k_indices)
+            top_k_gates = p_sel / p_sel.detach()
 
         zeros = torch.zeros_like(logits, requires_grad=True)
         gates = zeros.scatter(1, top_k_indices, top_k_gates)
@@ -467,6 +475,7 @@ class Adapter_MoElayer(nn.Module):
             if len(expert_inputs[i]) == 0: continue
             expert_output =  self.adapter_experts[i](expert_inputs[i])
             expert_output = expert_output.reshape(expert_output.size(0), 197*self.dim)
+            if ST_GATE: expert_output = expert_output * gates[i]   # gates[i]: [n_i, 1], value exactly 1
             expert_outputs.append(expert_output)
 
         y = dispatcher.combine(expert_outputs)
@@ -604,6 +613,10 @@ class LoRA_MoElayer(nn.Module):
         top_k_logits = top_logits[:, :self.k]
         top_k_indices = top_indices[:, :self.k]
         top_k_gates = self.softmax(top_k_logits)
+        if ST_GATE and self.k == 1:
+            # straight-through gate: forward value is exactly 1, backward carries the task gradient to w_gate / w_noise
+            p_sel = self.softmax(logits).gather(1, top_k_indices)
+            top_k_gates = p_sel / p_sel.detach()
 
         zeros = torch.zeros_like(logits, requires_grad=True)
         gates = zeros.scatter(1, top_k_indices, top_k_gates)
@@ -644,6 +657,7 @@ class LoRA_MoElayer(nn.Module):
             if len(expert_inputs[i]) == 0: continue
             qkv_delta = F.linear(expert_inputs[i], self.Lora_a_experts[i].weight)
             qkv_delta = F.linear(qkv_delta, self.Lora_b_experts[i].weight)
+            if ST_GATE: qkv_delta = qkv_delta * gates[i]           # gates[i]: [n_i, 1], value exactly 1
             expert_outputs.append(qkv_delta)
         y = dispatcher.combine(expert_outputs)
         y = y.reshape(B,N,C*3)
@@ -1622,4 +1636,3 @@ if __name__ == '__main__':
     x = torch.rand(32,3,224,224)
     y,_ = model(x)
     print(y.shape)
-
