@@ -1,0 +1,42 @@
+# Frozen configuration for the baseline and the modified (ST_GATE) run.
+# STATUS: draft until the Day 2 owner commits it; after that it must not change (only ST_GATE differs between the two runs).
+# "train.py" = values read from the authors' train.py as provided. "decision" = chosen by us.
+
+seed: 2024                     # train.py
+precision: fp32                # train.py (GradScaler is created but never used; no AMP)
+batch_size: 32                 # train.py
+epochs: 20                     # train.py default, kept
+optimizer: Adam                # train.py: betas (0.9, 0.999), weight_decay 1e-5
+learning_rate: 3.0e-5          # train.py, all parameters except the gate
+gate_learning_rate: 1.0e-4     # train.py, w_gate and w_noise
+scheduler: StepLR(step_size=5, gamma=0.5)   # train.py
+loss: CE + 1 * moe_loss        # train.py; moe_loss = 200 * lora_loss + 1 * adapter_loss (ViT_MoE.py)
+trainable_parameters: 15510722 # printed by the model: LoRA 14579712, adapter 911040, head 1538 (+ 12 x norm1 = 18432)
+
+data:                          # decision (reduced from the paper's setting to fit Kaggle)
+  dataset: FaceForensics++ c23, official splits (720 / 140 / 140 videos per method)
+  train_videos_per_method: 720
+  train_frames_per_fake_video: 5      # train.py --train_frames 5
+  train_frames_per_real_video: 20     # dataset.py uses 4 x train_frames for real videos
+  valid_test_frames_per_video: 20
+  face_crop: facenet-pytorch MTCNN, largest face, box scale 1.3, 224x224 PNG   # decision; same for ALL datasets
+  note: reduced data and epochs, so numbers are compared only with our own baseline, not with the paper's table
+
+measured_on_kaggle_t4:
+  seconds_per_iteration: 0.946        # random inputs, batch 32, fp32, includes optimizer step; excludes data loading
+  peak_gpu_memory_gb: 7.36
+  iterations_per_epoch: 900           # 28,800 crops / 32
+  estimated_epoch_minutes: 14.2       # ESTIMATE = 900 x 0.946 s; excludes validation and data loading
+
+commands:                      # run from the repo root; note the trailing slash on --model_dir (train.py builds the best-model path by concatenation)
+  prepare_data: bash scripts/prep_ffpp.sh <your_FF_download_script.py>
+  unzip_in_training_notebook: |
+    mkdir -p /kaggle/temp/FFPP/c23 && for s in train valid test; do unzip -q /kaggle/input/<prep-notebook-output>/ffpp_c23_$s.zip -d /kaggle/temp/FFPP/c23; done
+  train_baseline: |
+    python train.py --data_root /kaggle/temp/FFPP/c23 --model_dir /kaggle/working/runs/baseline/ --train_frames 5 --epochs 20 --batch_size 32 --learning_rate 3e-5 --device 0
+  train_modified: |
+    ST_GATE=1 python train.py --data_root /kaggle/temp/FFPP/c23 --model_dir /kaggle/working/runs/stgate/ --train_frames 5 --epochs 20 --batch_size 32 --learning_rate 3e-5 --device 1
+  eval_ffpp_test: |
+    python eval.py --model_path <checkpoint .tar or .pkl> --test_root /kaggle/temp/FFPP/c23/test --dataset FFPP --frames 20 --out_json results/<run>_ffpp.json
+  eval_celebdf: |
+    python eval.py --model_path <checkpoint> --test_root <CDF test root> --dataset CDF --frames 100 --out_json results/<run>_cdf.json
